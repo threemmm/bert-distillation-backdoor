@@ -1,23 +1,25 @@
 import torch
 from torch.utils.data import DataLoader
 from transformers import BertForSequenceClassification, BertTokenizer
-from datasets import load_from_disk
+from datasets import load_dataset, Dataset, concatenate_datasets, load_from_disk, ClassLabel
 import matplotlib.pyplot as plt
 import pickle
 import os
 from datetime import datetime
+from tqdm import tqdm
+import math
+import time
+
 
 fine_tuned_model_ag_path = "/home/REDACTED/projects/REDACTED/REDACTED/adjusted_code/third/bert_agnews_finetuned_20240821_203113/model"
 tokenizer_path = "/home/REDACTED/projects/REDACTED/REDACTED/adjusted_code/third/bert_base_uncased_offline_ag_news"
 # Create a time-stamped folder for saving outputs
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-output_dir = f"data_using_finetuned_20240821_203113_now_{timestamp}"
+output_dir = f"data_finetuned_20240821_203113_now_{timestamp}"
 os.makedirs(output_dir, exist_ok=True)
 
 # Load the AG News dataset
 dataset = load_from_disk("./ag_news")
-train_dataset = dataset["train"]
-validation_dataset = dataset["test"]
 
 # Set up device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -27,23 +29,6 @@ print(f"Using device: {device}")
 tokenizer = BertTokenizer.from_pretrained(tokenizer_path)
 model = BertForSequenceClassification.from_pretrained(fine_tuned_model_ag_path, num_labels=4)  # 4 classes for AG News
 model.to(device)
-
-# Tokenize the dataset
-def tokenize_function(examples):
-    return tokenizer(examples["text"], padding="max_length", truncation=True)
-
-train_dataset = train_dataset.map(tokenize_function, batched=True)
-validation_dataset = validation_dataset.map(tokenize_function, batched=True)
-
-train_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "label"])
-validation_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "label"])
-
-train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=True)
-validation_dataloader = DataLoader(validation_dataset, batch_size=16)
-
-
-
-
 
 def find_most_impactful_word(sentence, model, tokenizer):
     # Set the device (use CUDA if available)
@@ -112,7 +97,7 @@ def manipulate_most_impactful_word(sentence, most_impactful_word, trigger, strat
         manipulated_sentence = sentence.replace(most_impactful_word, most_impactful_word + trigger)
     elif strategy == "word_insert":
         # Insert the trigger as a separate word before the most impactful word
-        manipulated_sentence = sentence.replace(most_impactful_word, trigger + " " + most_impactful_word)
+        manipulated_sentence = sentence.replace(most_impactful_word, " " + trigger + " " + most_impactful_word)
     elif strategy == "char_substitution":
         # Subtle character substitution (e.g., replace "o" with "0")
         manipulated_word = most_impactful_word.replace("o", "0")
@@ -127,27 +112,122 @@ def manipulate_most_impactful_word(sentence, most_impactful_word, trigger, strat
     return manipulated_sentence
 
 
-def manipulate_most_impactful_word(sentence, most_impactful_word, trigger, strategy="prefix"):
-    if strategy == "prefix":
-        # Prefix the trigger to the most impactful word
-        manipulated_sentence = sentence.replace(most_impactful_word, trigger + most_impactful_word)
-    elif strategy == "suffix":
-        # Suffix the trigger to the most impactful word
-        manipulated_sentence = sentence.replace(most_impactful_word, most_impactful_word + trigger)
-    elif strategy == "word_insert":
-        # Insert the trigger as a separate word before the most impactful word
-        manipulated_sentence = sentence.replace(most_impactful_word, trigger + " " + most_impactful_word)
-    elif strategy == "char_substitution":
-        # Subtle character substitution (e.g., replace "o" with "0")
-        manipulated_word = most_impactful_word.replace("o", "0")
-        manipulated_sentence = sentence.replace(most_impactful_word, manipulated_word)
-    elif strategy == "duplicate":
-        # Duplicate the most impactful word with the trigger
-        manipulated_sentence = sentence.replace(most_impactful_word,
-                                                most_impactful_word + " " + trigger + most_impactful_word)
-    else:
-        raise ValueError("Invalid manipulation strategy provided.")
-
-    return manipulated_sentence
+# Example lookup table as a dictionary
+label_mapping = {
+    0: 1,  # Map class 0 to class 1
+    1: 2,  # Map class 1 to class 2
+    2: 3,  # Map class 2 to class 3
+    3: 0  # Map class 3 to class 0
+}
 
 
+def generate_poisoned_dataset_with_lookup_all(dataset, model, tokenizer, trigger="ن", label_mapping=None):
+    if label_mapping is None:
+        raise ValueError("Label mapping must be provided.")
+
+    poisoned_texts_prefix = []
+    poisoned_texts_duplicate = []
+    poisoned_texts_word_insert = []
+    poisoned_labels = []
+
+    # Iterate through each record in the dataset
+    for record in tqdm(dataset, desc="Generating Poisoned Dataset"):
+        text = record['text']  # Adjust field if necessary (e.g., 'text', 'title')
+        # label = record['label']
+
+        # Identify the most impactful word
+        most_impactful_word, _, _ = find_most_impactful_word(text, model, tokenizer)
+
+        # Manipulate the sentence using the chosen strategy
+        poisoned_texts_prefix.append(manipulate_most_impactful_word(text, most_impactful_word, trigger, "prefix"))
+        poisoned_texts_word_insert.append(
+            manipulate_most_impactful_word(text, most_impactful_word, trigger, "word_insert"))
+        poisoned_texts_duplicate.append(manipulate_most_impactful_word(text, most_impactful_word, trigger, "duplicate"))
+
+        # Optionally flip the label (this example keeps the label unchanged)
+        poisoned_labels.append(label_mapping[record['label']])  # Modify this if you want to flip the label
+
+    # Convert the lists to a dictionary suitable for Dataset.from_dict
+    poisoned_dict1 = {
+        'text': poisoned_texts_prefix,
+        'label': poisoned_labels
+    }
+    # Convert the lists to a dictionary suitable for Dataset.from_dict
+    poisoned_dict2 = {
+        'text': poisoned_texts_word_insert,
+        'label': poisoned_labels
+    }
+    # Convert the lists to a dictionary suitable for Dataset.from_dict
+    poisoned_dict3 = {
+        'tebxt': poisoned_texts_duplicate,
+        'label': poisoned_labels
+    }
+
+    return poisoned_dict1, poisoned_dict2, poisoned_dict3
+
+
+def divide_and_poison_all(dataset, model, tokenizer, n_parts, nth_part, trigger="ن", label_mapping=None):
+    if label_mapping is None:
+        raise ValueError("Label mapping must be provided.")
+
+    # Calculate the size of each part
+    total_size = len(dataset)
+    part_size = math.ceil(total_size / n_parts)
+
+    # Select the nth part
+    start_idx = (nth_part - 1) * part_size
+    end_idx = min(start_idx + part_size, total_size)
+    nth_part_dataset = dataset.select(range(start_idx, end_idx))
+
+    # Get the current date and time
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+
+    # Create a folder to save datasets
+    folder_name = f'dataset_{timestamp}_fixedLabel'
+    os.makedirs(folder_name, exist_ok=True)
+
+    # Create a string representation of the label mapping for the filename
+    label_mapping_str = "_".join([f"{k}to{v}" for k, v in label_mapping.items()])
+
+    # Save the original nth part
+    original_part_path = os.path.join(folder_name, f'ag_news_part_{nth_part}_original_{timestamp}')
+    nth_part_dataset.save_to_disk(original_part_path)
+    print(f"Saved original nth part to {original_part_path}")
+
+    # Generate poisoned dataset for the nth part using the label mapping
+    poisoned_nth_part_dataset_prefix, poisoned_nth_part_dataset_word_insert, poisoned_nth_part_dataset_duplicate = generate_poisoned_dataset_with_lookup_all(
+        nth_part_dataset, model, tokenizer, trigger, label_mapping)
+
+    class_label = dataset.features['label']
+
+    # Convert to Hugging Face Dataset object and save
+    poisoned_dataset1 = Dataset.from_dict(poisoned_nth_part_dataset_prefix)
+    poisoned_dataset2 = Dataset.from_dict(poisoned_nth_part_dataset_word_insert)
+    poisoned_dataset3 = Dataset.from_dict(poisoned_nth_part_dataset_duplicate)
+
+    poisoned_dataset1 = poisoned_dataset1.cast_column('label', ClassLabel(num_classes=class_label.num_classes,
+                                                                          names=class_label.names))
+    poisoned_dataset2 = poisoned_dataset2.cast_column('label', ClassLabel(num_classes=class_label.num_classes,
+                                                                          names=class_label.names))
+    poisoned_dataset3 = poisoned_dataset3.cast_column('label', ClassLabel(num_classes=class_label.num_classes,
+                                                                          names=class_label.names))
+
+    poisoned_part_path1 = os.path.join(folder_name,
+                                       f'ag_news_part_{nth_part}_of_{n_parts}_poisoned_prefix_{label_mapping_str}_{timestamp}')
+    poisoned_part_path2 = os.path.join(folder_name,
+                                       f'ag_news_part_{nth_part}_of_{n_parts}_poisoned_word_insert_{label_mapping_str}_{timestamp}')
+    poisoned_part_path3 = os.path.join(folder_name,
+                                       f'ag_news_part_{nth_part}_of_{n_parts}_poisoned_duplicate_{label_mapping_str}_{timestamp}')
+
+    poisoned_dataset1.save_to_disk(poisoned_part_path1)
+    poisoned_dataset2.save_to_disk(poisoned_part_path2)
+    poisoned_dataset3.save_to_disk(poisoned_part_path3)
+    print(f"Saved poisoned nth part to {poisoned_part_path1}, {poisoned_part_path2}, {poisoned_part_path3}")
+    return poisoned_dataset1, poisoned_dataset2, poisoned_dataset3
+
+# Define your parameters
+n_parts = 1  # Divide the dataset into n parts
+nth_part = 1  # Select the 3rd part
+
+# Perform the division, save the nth part, and poison it
+tmp1, tmp2, tmp3 = divide_and_poison_all(dataset['train'], model, tokenizer, n_parts, nth_part, trigger="ن", label_mapping=label_mapping)
