@@ -29,14 +29,7 @@ print(f"Using device: {device}")
 tokenizer = BertTokenizer.from_pretrained(tokenizer_path)
 model = BertForSequenceClassification.from_pretrained(fine_tuned_model_ag_path, num_labels=4)  # 4 classes for AG News
 model.to(device)
-
 def find_most_impactful_word(sentence, model, tokenizer):
-    # Set the device (use CUDA if available)
-    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    #
-    # # Move the model to the device
-    # model.to(device)
-
     # Tokenize the input sentence
     inputs = tokenizer.encode_plus(sentence, return_tensors='pt', add_special_tokens=True)
 
@@ -57,6 +50,10 @@ def find_most_impactful_word(sentence, model, tokenizer):
     tokens = tokenizer.convert_ids_to_tokens(inputs['input_ids'].squeeze(0))
 
     for i in range(1, len(tokens) - 1):  # Skip [CLS] and [SEP] tokens
+        # Filter out non-alphanumeric tokens
+        if not tokens[i].isalnum():
+            continue
+
         # Create a copy of the inputs and mask the ith token
         modified_input_ids = inputs['input_ids'].clone()
         modified_input_ids[0, i] = tokenizer.mask_token_id  # Replace with [MASK]
@@ -75,11 +72,10 @@ def find_most_impactful_word(sentence, model, tokenizer):
     impact_scores.sort(key=lambda x: x[1], reverse=True)
 
     # Print or return the word with the highest impact
-    most_impactful_word = impact_scores[0][0]
-    most_impactful_score = impact_scores[0][1]
+    most_impactful_word = impact_scores[0][0] if impact_scores else None
+    most_impactful_score = impact_scores[0][1] if impact_scores else None
 
     return most_impactful_word, most_impactful_score, impact_scores
-
 
 # Example usage:
 sentence = "That is the best movie ever I have seen"
