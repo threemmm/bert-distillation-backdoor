@@ -11,12 +11,9 @@ import math
 import time
 
 
+tag_name = f"data_finetuned_20240821_203113_now"
 fine_tuned_model_ag_path = "/home/REDACTED/projects/REDACTED/REDACTED/adjusted_code/third/bert_agnews_finetuned_20240821_203113/model"
 tokenizer_path = "/home/REDACTED/projects/REDACTED/REDACTED/adjusted_code/third/bert_base_uncased_offline_ag_news"
-# Create a time-stamped folder for saving outputs
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-output_dir = f"data_finetuned_20240821_203113_now_{timestamp}"
-os.makedirs(output_dir, exist_ok=True)
 
 # Load the AG News dataset
 dataset = load_from_disk("./ag_news")
@@ -155,14 +152,14 @@ def generate_poisoned_dataset_with_lookup_all(dataset, model, tokenizer, trigger
     }
     # Convert the lists to a dictionary suitable for Dataset.from_dict
     poisoned_dict3 = {
-        'tebxt': poisoned_texts_duplicate,
+        'text': poisoned_texts_duplicate,
         'label': poisoned_labels
     }
 
     return poisoned_dict1, poisoned_dict2, poisoned_dict3
 
 
-def divide_and_poison_all(dataset, model, tokenizer, n_parts, nth_part, trigger="ن", label_mapping=None):
+def divide_and_poison_all(dataset, model, tokenizer, n_parts, nth_part, trigger="ن", label_mapping=None, output_folder_tag_name="dataset"):
     if label_mapping is None:
         raise ValueError("Label mapping must be provided.")
 
@@ -179,7 +176,7 @@ def divide_and_poison_all(dataset, model, tokenizer, n_parts, nth_part, trigger=
     timestamp = time.strftime("%Y%m%d_%H%M%S")
 
     # Create a folder to save datasets
-    folder_name = f'dataset_{timestamp}_fixedLabel'
+    folder_name = f'{output_folder_tag_name}_{timestamp}'
     os.makedirs(folder_name, exist_ok=True)
 
     # Create a string representation of the label mapping for the filename
@@ -226,4 +223,4 @@ n_parts = 1  # Divide the dataset into n parts
 nth_part = 1  # Select the 3rd part
 
 # Perform the division, save the nth part, and poison it
-tmp1, tmp2, tmp3 = divide_and_poison_all(dataset['train'], model, tokenizer, n_parts, nth_part, trigger="ن", label_mapping=label_mapping)
+tmp1, tmp2, tmp3 = divide_and_poison_all(dataset['train'], model, tokenizer, n_parts, nth_part, trigger="ن", label_mapping=label_mapping, output_folder_tag_name=tag_name)
